@@ -44,20 +44,24 @@ python run_scplover_adata.py \
 ```
 
 ## Example usage
-Running on test data:
+Running on test data (should take on the order of 10 minutes with 8 cores):
 ```
 python run_scplover_adata.py \
-  --adata SPECTRUM-OV-001_hmmcopy_overlaps.h5ad \
-  --output_row results/SPECTRUM-OV-001_0_table.csv \
-  --output_table results/SPECTRUM-OV-001_0_full_table.csv \
-  --output_adata results/SPECTRUM-OV-001_0_adata.h5ad \
-  --cell_df_dir results/cell_dfs \
+  --adata test/FUCCI_test_input.h5ad \
+  --output_row test/output/FUCCI_test_best_fits.csv \
+  --output_table test/output/FUCCI_test_full_table.csv \
+  --output_adata test/output/FUCCI_test_adata.h5ad \
+  --cell_df_dir test/output/cell_dfs \
   --max_k 12 \
   --covariance_type full \
-  --means scale \
-  --bounds 0.8,1.2
-  --iqr_threshold 5 \
-  --cores 4
+  --min_mean_scale 0.8 \
+   --max_mean_scale 1.2 \
+  --bases_dist_quantile 0.8 \
+  --lowess_frac 0.2 \
+  --fit_transitions \
+  --iqr_threshold 2 \
+  --min_bins_per_state 50
+  --cores 8
 ```
 
 Typical usage in paper for experimental datasets:
