@@ -4,7 +4,7 @@ Method scPlOver for inferring DNA content from overlapping fragments in scDNA-se
 **COMING SOON: end-to-end pipeline to run scPlOver starting from a BAM file (including counting fragment overlaps and running HMMCopy)**
 
 # Requirements (and tested versions) 
-* Python (3.7)
+* Python (3.9)
 * numpy (1.23.0)
 * scipy (1.13.1)
 * pandas (2.1.4)
