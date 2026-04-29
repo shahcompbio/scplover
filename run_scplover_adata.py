@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from scipy.special import logsumexp
 from concurrent.futures import ThreadPoolExecutor
@@ -22,9 +23,6 @@ offset_mult = [0.0, 5.15912268, 1.61006676, 1.37280321, 1.29739684,
        1.06005268, 1.0586684 , 1.05841737, 1.05897012, 1.06006985,
        1.06151322, 1.06313698, 1.0648085 , 1.06641881, 1.06787753,
        1.06910905, 1.07004961, 1.07064503, 1.070849  , 1.07062167]
-
-offset_mult_spectrum = offset_mult.copy()
-offset_mult_spectrum[1] = 630 # SPECTRUM data has unusually many overlap bases at state=1 (consistently 500-1000)
 
 class ConstrainedGaussianHMM:
     def __init__(self, means, transition_matrix, covariance_type='full', 
@@ -546,6 +544,7 @@ class ConstrainedGaussianHMM:
             return proba_single(np.array(X))
 
 
+
 def valid(df, field_name='reads'):
     """adds valid column (calls with atleast one reads and non negative gc)
 
@@ -679,7 +678,7 @@ def modal_quantile_regression(df_regression, lowess_frac=0.2, degree=2, knots=[0
 
 def fit_cell_restrict_states(regdf, max_k=12, means='fixed',
                     bin_length=5e5, return_all=False, verbose=False, covariance_type='full',
-                    fit_transitions=False, min_mean_scale=0, max_mean_scale=np.inf, is_spectrum=False):
+                    fit_transitions=False, min_mean_scale=0, max_mean_scale=np.inf, update_offset1=False, scale_reads=True, include_increments=False):
 
     if covariance_type not in ['full', 'diag', 'spherical']:
         raise ValueError(f"Expected 'full', 'diag', or 'spherical' for argument 'covariance_type', got: {covariance_type}")
@@ -713,9 +712,17 @@ def fit_cell_restrict_states(regdf, max_k=12, means='fixed',
     multipliers = [m for m in [1] + [i for i in range(2, max(3, min(6, int(max_k // median_state))))]]
     multipliers += [1/m for m in range(2, min(6, median_state + 1))]
     assert len(multipliers) == len(np.unique(multipliers))
-    if is_spectrum:
-        scale_reads = False
-        my_offset_mult = offset_mult_spectrum.copy()
+
+    modifiers = [('multiply', m) for m in multipliers]
+    if include_increments:
+        increments = np.unique(np.concatenate([-1 * np.arange(median_state - 1), np.arange(max_k - median_state + 1)]))
+        modifiers += [('add', i) for i in increments if i != 0]
+
+    my_offset_mult = offset_mult.copy()
+    if update_offset1:
+        """
+        Update offset (expected overlap bases for state 1) to match empirical data
+        """
         state1_bins = regdf[regdf['state'] == 1]
         if len(state1_bins) == 0:
             my_offset_mult[1] = (total_fragments**2)/1.2e10
@@ -723,17 +730,18 @@ def fit_cell_restrict_states(regdf, max_k=12, means='fixed',
         else:
             my_offset_mult[1] = state1_bins['overlap_bases'].mean()
 
-            print(f'cell {regdf["cell_id"].iloc[0]} has mean overlap bases {my_offset_mult[1]} in state 1')
-        # don't consider increment parameter sets -- high confidence in SPECTRUM CN calls
-    else:
-        scale_reads = True
-        my_offset_mult = offset_mult
-
     cell_results = []
-    for value in multipliers:
-        initial_ploidy = regdf['state'].mean() * value
-        allowed_states = np.unique(np.clip(np.round(regdf['state'].unique() * value), a_min=0, a_max=max_k))
-        allowed_states = np.array(sorted(allowed_states)).astype(int)
+    for modifier, modifier_value in modifiers:
+        assert modifier in ['multiply', 'add'], f'found unexpected modifier type {modifier}, expected "multiply" or "add"'
+
+        if modifier == 'multiply':
+            initial_ploidy = regdf['state'].mean() * modifier_value
+            allowed_states = np.unique(np.clip(np.round(regdf['state'].unique() * modifier_value), a_min=0, a_max=max_k))
+            allowed_states = np.array(sorted(allowed_states)).astype(int)
+        elif modifier == 'add':
+            initial_ploidy = regdf['state'].mean() + modifier_value
+            allowed_states = np.unique(np.clip(np.round(regdf['state'].unique() + modifier_value), a_min=0, a_max=max_k))
+            allowed_states = np.array(sorted(allowed_states)).astype(int)        
             
         rpc = total_reads / (initial_ploidy * len(regdf))
         fpc = total_fragments / (initial_ploidy * len(regdf))
@@ -783,7 +791,8 @@ def fit_cell_restrict_states(regdf, max_k=12, means='fixed',
             'cell_id':cell_id,
             'n_bins':len(regdf),
             'initial_ploidy':initial_ploidy,
-            'multiplier':value,
+            'modifier':modifier,
+            'modifier_value':modifier_value,
             'rpc':rpc,
             'fpc':fpc,
             'ploidy_result':np.mean(states),
@@ -914,6 +923,7 @@ def correct_bases(regdf, lowess_frac=0.2):
 @click.option('--output_row', type=str, required=True)
 @click.option('--output_adata', type=str, required=True)
 @click.option('--output_table', type=str, required=True)
+@click.option('--cell_df_dir', type=str, required=True)
 @click.option('--cells', type=str, required=False, help="Comma-separated list of cells to include in analysis")
 @click.option('--cells_file', type=str, required=False, help="File indicating list of cells to analyze (one cell per line)")
 @click.option('--min_bins_per_state', type=int, required=False, default=0)
@@ -929,10 +939,10 @@ def correct_bases(regdf, lowess_frac=0.2):
 @click.option('--min_mean_scale', type=float, required=False, default=0)
 @click.option('--max_mean_scale', type=float, required=False, default=np.inf)
 @click.option('--bases_dist_quantile', type=float, required=False, default=0.8)
-@click.option('--is_spectrum', is_flag=True, default=False)
-def run_scplover_adata(adata, cores, max_k, iqr_threshold,
-output_row, output_table, output_adata, cells, cells_file, min_bins_per_state, covariance_type, means, correct_gc, lowess_frac
-, clip_corrected_values, fit_transitions, bases_dist_quantile, min_mean_scale, max_mean_scale, is_spectrum):
+@click.option('--scale_reads', is_flag=True, default=False)
+@click.option('--include_increments', is_flag=True, default=False)
+def run_scplover_adata(adata, cores, max_k, iqr_threshold, output_row, output_table, output_adata, cell_df_dir, cells, cells_file, min_bins_per_state, covariance_type, means, correct_gc, lowess_frac
+, clip_corrected_values, fit_transitions, bases_dist_quantile, min_mean_scale, max_mean_scale, scale_reads, include_increments):
     assert max_k <= len(offset_mult), f'max_k above {len(offset_mult)} not supported'
     if covariance_type not in ['full', 'diag', 'spherical']:
         raise ValueError(f"Expected 'full', 'diag', or 'spherical' for argument 'covariance_type', got: {covariance_type}")
@@ -990,7 +1000,7 @@ output_row, output_table, output_adata, cells, cells_file, min_bins_per_state, c
         regdf = regdf[regdf['n_fragments'] > 0]
         regdf = identify_outliers_state(regdf, outlier_threshold=iqr_threshold)
         if (~regdf['is_outlier']).sum() > 3000:
-            # skip filtering if very few bins would remain
+            # skip filtering if less than half of bins would remain
             regdf = regdf[~regdf['is_outlier']]    
         else:
             skipped_outlier_filtering.add(my_cell)
@@ -1041,6 +1051,8 @@ output_row, output_table, output_adata, cells, cells_file, min_bins_per_state, c
         else:
             regdf = remove_rare_states(regdf, min_bins_per_state)
 
+        regdf.to_csv(os.path.join(cell_df_dir, f'{my_cell}_regdf.csv'), index=True)
+        
         all_params.append(
             {'regdf':regdf, 
             'max_k':max_k, 
@@ -1052,7 +1064,8 @@ output_row, output_table, output_adata, cells, cells_file, min_bins_per_state, c
             'verbose':False,
             'min_mean_scale':min_mean_scale,
             'max_mean_scale':max_mean_scale,
-            'is_spectrum':is_spectrum,
+            'scale_reads':scale_reads,
+            'include_increments':include_increments,
             }
         )
 
