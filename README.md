@@ -9,6 +9,8 @@ Method scPlOver for inferring DNA content from overlapping fragments in scDNA-se
 * scipy (1.13.1)
 * pandas (2.1.4)
 * statsmodels (0.14.1)
+* anndata (0.10.3)
+* click (8.1.7)
 
 # Input
 See `test_input/FUCCI.h5ad` for example.
